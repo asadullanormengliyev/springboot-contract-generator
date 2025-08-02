@@ -41,10 +41,19 @@ interface UserService {
     fun getAllDirectorsByOrganisationId(id: Long): List<GetOneUser>
     fun userStatus(id: Long, request: UserStatusUpdateRequest)
     fun userRoleUpdate(id: Long, request: UserRoleUpdateRequest)
-    fun getAllFilter(status: Status?, role: UserRole?, username: String?, fullName: String?, lastName: String?, pageable: Pageable): Page<GetOneUser>
+    fun getAllFilter(
+        status: Status?,
+        role: UserRole?,
+        username: String?,
+        fullName: String?,
+        lastName: String?,
+        pageable: Pageable
+    ): Page<GetOneUser>
+
     fun findByUserName(username: String): UserDto
     fun getAllUsersFilter(status: Status?, fullName: String?, lastName: String?, pageable: Pageable): Page<UserDto>
-    fun getAllOperatorsByOrganisation(userId: Long,search: String?,pageable: Pageable): Page<GetOneUser>
+    fun getAllOperatorsByOrganisation(userId: Long, search: String?, pageable: Pageable): Page<GetOneUser>
+    fun updatePassword(id: Long, newPassword: String, confirmPassword: String)
 }
 
 interface OrganisationService {
@@ -55,8 +64,21 @@ interface OrganisationService {
     fun get(id: Long): GetOneOrganisation
     fun searchAddress(address: String): List<GetOneOrganisation>
     fun searchByNameLike(name: String): List<GetOneOrganisation>
-    fun getAllUserByOrganisationIdFilterStatusAndUsername(organisationId: Long?, status: Status?, username: String?, fullName: String?, lastName: String?, pageable: Pageable): Page<GetOneUser>
-    fun findUsersByOrganisationIdAndFilters(userId: Long, fullName: String?, status: Status?, pageable: Pageable): Page<GetOneUser>
+    fun getAllUserByOrganisationIdFilterStatusAndUsername(
+        organisationId: Long?,
+        status: Status?,
+        username: String?,
+        fullName: String?,
+        lastName: String?,
+        pageable: Pageable
+    ): Page<GetOneUser>
+
+    fun findUsersByOrganisationIdAndFilters(
+        userId: Long,
+        fullName: String?,
+        status: Status?,
+        pageable: Pageable
+    ): Page<GetOneUser>
 }
 
 interface TemplateService {
@@ -80,11 +102,17 @@ interface ContractService {
     fun deleteContract(id: Long)
     fun updateContract(contractId: Long, request: UpdateContractRequest)
     fun getContractValueByContractId(contractId: Long): List<GetContractValueAndTemplateKeyDto>
+    fun getContractFileBytes(contractId: Long): File
+    fun getAllContractsByOrganisation(
+        organisationId: Long,
+        title: String?,
+        pageable: Pageable
+    ): Page<ContractsByOrganizationDto>
 }
 
 interface ContractAssignmentService {
     fun assignContractToOperator(contractId: Long, request: ContractAssignRequest, assignedById: Long)
-    fun getAllOperatorByContractId(contractId: Long,search: String?): List<UserWithPermissionDto>
+    fun getAllOperatorByContractId(contractId: Long): List<UserWithPermissionDto>
 }
 
 interface DownloadHistoryService {
@@ -92,10 +120,10 @@ interface DownloadHistoryService {
     fun getById(id: Long): File
 }
 
-interface TemplateAssignmentService{
-    fun assignTemplateToOperator(templateId: Long,request: TemplateAssignRequest,assignedById: Long)
-    fun getAllOperatorByTemplate(templateId: Long,search: String?): List<UserWithPermissionDto>
-    fun searchTemplatesByOperatorIdAndTitle(operatorId: Long,title: String?,pageable: Pageable): Page<GetOneTemplate>
+interface TemplateAssignmentService {
+    fun assignTemplateToOperator(templateId: Long, request: TemplateAssignRequest, assignedById: Long)
+    fun getAllOperatorByTemplate(templateId: Long): List<UserWithPermissionDto>
+    fun searchTemplatesByOperatorIdAndTitle(operatorId: Long, title: String?, pageable: Pageable): Page<GetOneTemplate>
 }
 
 @Service
@@ -308,7 +336,7 @@ class UserServiceImpl(
             fullName?.let { user.fullName = it }
             lastName?.let { str -> user.lastName = str }
             username?.let { user.username = it }
-            password?.let { user.password = passwordEncoder.encode(it)}
+            password?.let { user.password = passwordEncoder.encode(it) }
         }
         userRepository.save(user)
     }
@@ -407,6 +435,15 @@ class UserServiceImpl(
         return usersPage.map { GetOneUser.toResponse(it) }
     }
 
+    override fun updatePassword(id: Long, newPassword: String, confirmPassword: String) {
+        val user = userRepository.findByIdAndDeletedFalse(id) ?: throw UserNotFoundException(id)
+        if (newPassword != confirmPassword) {
+            throw PasswordMismatchException(newPassword, confirmPassword)
+        }
+        val encode = passwordEncoder.encode(newPassword)
+        user.password = encode
+        userRepository.save(user)
+    }
 
 }
 
@@ -625,8 +662,10 @@ class TemplateServiceImpl(
         templateKeyRepository.saveAll(updatedKeys)
     }
 
-    fun findByTemplateKeyByTemplateId(templateKeyId: Long): Template{
-        return templateKeyRepository.findTemplateKeyByTemplateId(templateKeyId)?:throw TemplateKeyNotFoundException(templateKeyId)
+    fun findByTemplateKeyByTemplateId(templateKeyId: Long): Template {
+        return templateKeyRepository.findTemplateKeyByTemplateId(templateKeyId) ?: throw TemplateKeyNotFoundException(
+            templateKeyId
+        )
     }
 
 }
@@ -873,7 +912,8 @@ class ContractServiceImpl(
     }
 
     private fun createZipFile(files: List<File>): File {
-        val zipFile = File("/home/asadulla/IdeaProjects/Spring/SpringFramework/SpringBoot/Kotlin/project/uploads/zip${UUID.randomUUID()}.zip")
+        val zipFile =
+            File("/home/asadulla/IdeaProjects/Spring/SpringFramework/SpringBoot/Kotlin/project/uploads/zip${UUID.randomUUID()}.zip")
         ZipOutputStream(FileOutputStream(zipFile)).use { zipOutputStream ->
             files.forEach { file ->
                 FileInputStream(file).use { fil ->
@@ -940,6 +980,25 @@ class ContractServiceImpl(
         return contractValues.map { value -> GetContractValueAndTemplateKeyDto.toResponse(value) }
     }
 
+    override fun getContractFileBytes(contractId: Long): File {
+        val contract =
+            contractRepository.findByIdAndDeletedFalse(contractId) ?: throw ContractNotFoundException(contractId)
+        val file = File(contract.filePath)
+        if (!file.exists()) {
+            throw FileNotFoundException(contractId)
+        }
+        return file
+    }
+
+    override fun getAllContractsByOrganisation(
+        organisationId: Long,
+        title: String?,
+        pageable: Pageable
+    ): Page<ContractsByOrganizationDto> {
+        val contracts = contractRepository.getAllContractsByOrganisation(organisationId, title, pageable)
+        return contracts.map { contract -> ContractsByOrganizationDto.toResponse(contract) }
+    }
+
 }
 
 @Service
@@ -949,7 +1008,7 @@ class ContractAssignmentServiceImpl(
     private val contractAssignmentRepository: ContractAssignmentRepository
 ) : ContractAssignmentService {
 
-    override fun assignContractToOperator(contractId: Long,request: ContractAssignRequest, assignedById: Long) {
+    override fun assignContractToOperator(contractId: Long, request: ContractAssignRequest, assignedById: Long) {
         val contract = contractRepository.findById(contractId)
             .orElseThrow { ContractNotFoundException(contractId) }
 
@@ -997,12 +1056,12 @@ class ContractAssignmentServiceImpl(
         }
     }
 
-    override fun getAllOperatorByContractId(contractId: Long,search: String?): List<UserWithPermissionDto> {
-        val assignments = contractAssignmentRepository.findAllByContractIdWithOperator(contractId,search)
+    override fun getAllOperatorByContractId(contractId: Long): List<UserWithPermissionDto> {
+        val assignments = contractAssignmentRepository.findAllByContractIdWithOperator(contractId)
         return assignments.map { UserWithPermissionDto.fromAssignment(it) }
     }
 
-    fun getOperatorAssignedContract(userId: Long): OperatorAssignedContractRequest{
+    fun getOperatorAssignedContract(userId: Long): OperatorAssignedContractRequest {
         val findAllByTemplateByOperator = contractAssignmentRepository.findAllByContractByOperator(userId)
         val map = findAllByTemplateByOperator.map { assignment ->
             OperatorAssignedContractDto(
@@ -1045,16 +1104,19 @@ class DownloadHistoryServiceImpl(
 }
 
 @Service
-class TemplateAssignedServiceImpl(private val templateRepository: TemplateRepository,
+class TemplateAssignedServiceImpl(
+    private val templateRepository: TemplateRepository,
     private val userRepository: UserRepository,
-    private val templateAssignmentRepository: TemplateAssignmentRepository): TemplateAssignmentService{
+    private val templateAssignmentRepository: TemplateAssignmentRepository
+) : TemplateAssignmentService {
 
     override fun assignTemplateToOperator(
         templateId: Long,
         request: TemplateAssignRequest,
         assignedById: Long
     ) {
-        val template = templateRepository.findByIdAndDeletedFalse(templateId) ?: throw TemplateNotFoundException(templateId)
+        val template =
+            templateRepository.findByIdAndDeletedFalse(templateId) ?: throw TemplateNotFoundException(templateId)
         val user = userRepository.findByIdAndDeletedFalse(assignedById) ?: throw UserNotFoundException(assignedById)
 
         val flatMap = request.assignments.flatMap { dto ->
@@ -1100,8 +1162,8 @@ class TemplateAssignedServiceImpl(private val templateRepository: TemplateReposi
 
     }
 
-    override fun getAllOperatorByTemplate(templateId: Long,search: String?): List<UserWithPermissionDto> {
-        val templateAssignments = templateAssignmentRepository.findAllByTemplateIdWithOperator(templateId,search)
+    override fun getAllOperatorByTemplate(templateId: Long): List<UserWithPermissionDto> {
+        val templateAssignments = templateAssignmentRepository.findAllByTemplateIdWithOperator(templateId)
         return templateAssignments.map { assignment -> UserWithPermissionDto.fromTemplateAssignment(assignment) }
     }
 
@@ -1111,7 +1173,7 @@ class TemplateAssignedServiceImpl(private val templateRepository: TemplateReposi
         pageable: Pageable
     ): Page<GetOneTemplate> {
         val templates = templateAssignmentRepository.searchTemplatesByOperatorIdAndTitle(operatorId, title, pageable)
-       return templates.map { template -> GetOneTemplate.toResponse(template) }
+        return templates.map { template -> GetOneTemplate.toResponse(template) }
     }
 
     fun getOperatorAssignedTemplate(userId: Long): OperatorAssignedRequest {
@@ -1130,20 +1192,20 @@ class TemplateAssignedServiceImpl(private val templateRepository: TemplateReposi
 class PermissionService(
     private val contractAssignmentRepository: ContractAssignmentRepository,
     private val templateAssignmentRepository: TemplateAssignmentRepository
-){
+) {
 
-    fun checkContractPermission(operatorId: Long,contractId: Long,permissionType: PermissionType){
+    fun checkContractPermission(operatorId: Long, contractId: Long, permissionType: PermissionType) {
         val assignment = contractAssignmentRepository.findByContractIdAndOperatorId(contractId, operatorId)
-            ?: throw AccessDeniedException(contractId,operatorId)
-        if (permissionType !in assignment.permissions){
+            ?: throw AccessDeniedException(contractId, operatorId)
+        if (permissionType !in assignment.permissions) {
             throw OperatorPermissionException(permissionType)
         }
     }
 
-    fun checkTemplatePermission(operatorId: Long,templateId: Long,permissionType: PermissionType){
+    fun checkTemplatePermission(operatorId: Long, templateId: Long, permissionType: PermissionType) {
         val assignment = templateAssignmentRepository.findByTemplateIdAndOperatorId(templateId, operatorId)
-            ?: throw  AccessDeniedException(templateId, operatorId)
-        if (permissionType !in assignment.permissions){
+            ?: throw AccessDeniedException(templateId, operatorId)
+        if (permissionType !in assignment.permissions) {
             throw OperatorPermissionException(permissionType)
         }
     }

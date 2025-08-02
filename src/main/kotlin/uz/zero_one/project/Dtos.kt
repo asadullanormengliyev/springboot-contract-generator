@@ -346,3 +346,23 @@ data class OperatorAssignedContractDto(
 data class OperatorAssignedContractRequest(
     val assigned: List<OperatorAssignedContractDto>
 )
+
+data class ContractsByOrganizationDto(
+    val id: Long,
+    val title: String,
+    val filePath: String,
+    val fullName: String,
+    val lastName: String
+){
+    companion object{
+        fun toResponse(contract: Contract):ContractsByOrganizationDto{
+            return ContractsByOrganizationDto(
+                id = contract.id!!,
+                title = contract.template.title,
+                filePath = contract.filePath,
+                fullName = contract.operator.fullName,
+                lastName = contract.operator.lastName,
+            )
+        }
+    }
+}

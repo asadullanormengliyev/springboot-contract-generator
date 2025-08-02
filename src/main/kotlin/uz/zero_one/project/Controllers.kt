@@ -16,6 +16,7 @@ import java.io.File
 import java.security.Principal
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlin.contracts.contract
 
 @RestControllerAdvice
 class ExceptionHandlers(
@@ -66,6 +67,9 @@ class ExceptionHandlers(
                 .body(exceptions.getErrorMessage(errorMessageSource,exceptions.contractId,exceptions.operatorId))
             is OperatorPermissionException -> ResponseEntity.badRequest()
                 .body(exceptions.getErrorMessage(errorMessageSource,exceptions.permissionType))
+
+            is PasswordMismatchException -> ResponseEntity.badRequest()
+                .body(exceptions.getErrorMessage(errorMessageSource,exceptions.newPassword,exceptions.confirmPassword))
         }
     }
 }
@@ -96,6 +100,14 @@ class AuthController(
     @PatchMapping("/users/{id}/role")
     fun updateUserRole(@PathVariable id: Long, @RequestBody request: UserRoleUpdateRequest) {
         userServiceImpl.userRoleUpdate(id, request)
+    }
+
+    @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR','ADMIN')")
+    @PatchMapping("/{id}/update-password")
+    fun updatePassword(@PathVariable id: Long,
+                       @RequestParam newPassword: String,
+                       @RequestParam confirmPassword: String){
+        userServiceImpl.updatePassword(id,newPassword,confirmPassword)
     }
 
 }
@@ -165,7 +177,8 @@ class OrganisationController(private val organisationService: OrganisationServic
 @RequestMapping("/api/v1/admin")
 class AdminController(
     private val userService: UserServiceImpl,
-    private val adminServiceImpl: AdminServiceImpl
+    private val adminServiceImpl: AdminServiceImpl,
+    private val contractServiceImpl: ContractServiceImpl
 ) {
 
     @PreAuthorize("hasRole('ADMIN')")
@@ -225,6 +238,40 @@ class AdminController(
         pageable: Pageable
     ): Page<GetOneUser> {
         return userService.getAllFilter(status, role, username, fullName, lastName, pageable)
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/contracts/view/{contractId}")
+    fun viewContract(@PathVariable contractId: Long): ResponseEntity<ByteArray>{
+        val file = contractServiceImpl.getContractFileBytes(contractId)
+        val readBytes = file.readBytes()
+        val mediaType = getMediaType(file.extension)
+        val headers = HttpHeaders().apply {
+            contentType = mediaType
+            contentDisposition = ContentDisposition
+                .inline()
+                .filename(file.name)
+                .build()
+        }
+
+        return ResponseEntity.ok()
+            .headers(headers)
+            .body(readBytes)
+    }
+
+    @GetMapping("/organizations/{id}/contracts")
+    fun getContractsByOrganizationId(@PathVariable id: Long,
+                                     @RequestParam(required = false) title: String?,
+                                     pageable: Pageable): Page<ContractsByOrganizationDto>{
+        return contractServiceImpl.getAllContractsByOrganisation(id,title,pageable)
+    }
+
+    fun getMediaType(extension: String): MediaType = when (extension) {
+        "pdf" -> MediaType.APPLICATION_PDF
+        "docx" -> MediaType("application", "vnd.openxmlformats-officedocument.wordprocessingml.document")
+        "txt" -> MediaType.TEXT_PLAIN
+        "csv" -> MediaType("text", "csv")
+        else -> MediaType.APPLICATION_OCTET_STREAM
     }
 
 }
@@ -288,7 +335,7 @@ class DirectorController(
         return templateService.getOne(id)
     }
 
-    @PreAuthorize("hasRole('DIRECTOR')")
+    @PreAuthorize("hasAnyRole('DIRECTOR','ADMIN')")
     @PutMapping("/update/{id}")
     fun update(@PathVariable id: Long,@RequestBody updateDto: UserUpdateDto) {
         userService.update(id, updateDto)
@@ -528,16 +575,14 @@ class OperatorController(
 
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @GetMapping("/get-operator-assigned/{id}")
-    fun getAllOperatorByContractAssigned(@PathVariable id: Long,
-                                         @RequestParam(required = false) search: String?): List<UserWithPermissionDto>{
-       return contractAssignmentServiceImpl.getAllOperatorByContractId(id,search)
+    fun getAllOperatorByContractAssigned(@PathVariable id: Long): List<UserWithPermissionDto>{
+       return contractAssignmentServiceImpl.getAllOperatorByContractId(id)
     }
 
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @GetMapping("/get-operator-template-assigned/{id}")
-    fun getAllByOperatorByTemplatedAssigned(@PathVariable id: Long,
-                                            @RequestParam(required = false) search: String?): List<UserWithPermissionDto>{
-        return templateAssignedServiceImpl.getAllOperatorByTemplate(id,search)
+    fun getAllByOperatorByTemplatedAssigned(@PathVariable id: Long): List<UserWithPermissionDto>{
+        return templateAssignedServiceImpl.getAllOperatorByTemplate(id)
     }
 
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
