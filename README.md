@@ -7,7 +7,7 @@ This is a Kotlin + Spring Boot-based application for managing and generating con
 - 🔐 Role-based authentication (Operator, Director,ADMIN,USER etc.)
 - 📝 Template-based contract generation
 - 📎 Assign contracts to multiple operators
-- 📂 DOCX → PDF and PDF→DOCX conversion (LibreOffice)
+- 📂 DOCX → PDF and conversion (LibreOffice)
 - 📦 Download multiple files as ZIP
 - 🌐 Multi-language error messages (`Accept-Language` support)
 - 📊 Filter/search by name, status, etc.
