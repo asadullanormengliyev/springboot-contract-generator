@@ -1,0 +1,28 @@
+spring:
+  application:
+    name: project
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/postgres
+    username: postgres
+    password: 5555
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+jwt:
+  access:
+    token:
+      secretKey: "FFFFGGGGSSSEEEOOOPAASS888A99999ASSAASA09900AS889"
+      expire:
+        date: 900000000
+
+  refresh:
+    token:
+      secretKey: "FFFFGGGGSSSEEEOOOPAYYASSH8A99999ASSAASJKJKHHG9"
+      expire:
+        date: 86400000

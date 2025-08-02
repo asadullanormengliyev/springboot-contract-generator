@@ -107,5 +107,10 @@ class OperatorPermissionException(val permissionType: PermissionType) : DemoExce
     override fun errorType(): ErrorCode {
         return ErrorCode.OPERATOR_PERMISSION_EXCEPTION
     }
+}
 
+class PasswordMismatchException(val newPassword: String,val confirmPassword: String) : DemoExceptions(){
+    override fun errorType(): ErrorCode {
+        return ErrorCode.PASSWORD_MISS_MATCH_EXCEPTION
+    }
 }

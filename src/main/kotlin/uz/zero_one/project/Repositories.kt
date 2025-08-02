@@ -140,6 +140,11 @@ interface ContractRepository : BaseRepository<Contract> {
     """
     )
     fun findByIdWithValues(@Param("id") id: Long): Contract?
+
+    @Query("select c from Contract c where c.organisation.id =:organisationId and c.organisation.deleted = false and c.deleted = false and (:title IS NULL OR :title = '' OR LOWER(c.template.title) LIKE LOWER(CONCAT('%', :title, '%')))")
+    fun getAllContractsByOrganisation(@Param("organisationId") organisationId: Long,
+                                       @Param("title") title: String?,
+                                       pageable: Pageable): Page<Contract>
 }
 
 @Repository
@@ -181,8 +186,8 @@ interface ContractAssignmentRepository : BaseRepository<ContractAssignment> {
       and ca.deleted = false 
       and ca.contract.deleted = false 
 """)
-    fun findAllByContractIdWithOperator(@Param("contractId") contractId: Long,
-                                        @Param("search") search: String?): List<ContractAssignment>
+    fun findAllByContractIdWithOperator(@Param("contractId") contractId: Long): List<ContractAssignment>
+
     @Query("select ca from ContractAssignment ca where ca.operator.id =:userId and ca.deleted = false and ca.contract.deleted = false ")
     fun findAllByContractByOperator(@Param("userId") userId: Long): List<ContractAssignment>
 
@@ -201,8 +206,7 @@ interface TemplateAssignmentRepository : BaseRepository<TemplateAssignment> {
     fun findAllByTemplateId(templateId: Long) : List<TemplateAssignment>
 
     @Query("select ta from TemplateAssignment ta where ta.template.id =:templateId and ta.deleted = false and ta.template.deleted = false")
-    fun findAllByTemplateIdWithOperator(@Param("templateId") templateId: Long,
-                                        @Param("search") search: String?): List<TemplateAssignment>
+    fun findAllByTemplateIdWithOperator(@Param("templateId") templateId: Long): List<TemplateAssignment>
 
     @Query("select ta from TemplateAssignment ta where ta.operator.id =:userId and ta.deleted = false and ta.template.deleted = false ")
     fun findAllByTemplateByOperator(@Param("userId") userId: Long): List<TemplateAssignment>
