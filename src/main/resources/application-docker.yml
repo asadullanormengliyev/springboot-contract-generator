@@ -4,8 +4,8 @@ spring:
 
   datasource:
     url: postgresql://contract_user:FFVTWLlwpNHbUylo9yRdyV0XLvXmzNXd@dpg-d26rnneuk2gs73cddat0-a.oregon-postgres.render.com/contract_db
-    username: postgres
-    password: 5555
+    username: contract_user
+    password: FFVTWLlwpNHbUylo9yRdyV0XLvXmzNXd
 
   jpa:
     hibernate:
