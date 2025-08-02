@@ -3,7 +3,7 @@ spring:
     name: project
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/postgres
+    url: postgresql://contract_user:FFVTWLlwpNHbUylo9yRdyV0XLvXmzNXd@dpg-d26rnneuk2gs73cddat0-a.oregon-postgres.render.com/contract_db
     username: postgres
     password: 5555
 
