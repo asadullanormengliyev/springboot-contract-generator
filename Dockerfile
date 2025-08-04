@@ -1,19 +1,21 @@
-FROM eclipse-temurin:17-jdk-alpine
+# Use the official OpenJDK image as a base
+FROM openjdk:17-jdk-slim
 
-# Muallif
-LABEL author="asadulla"
-
-# Ishchi katalog
+# Set the working directory inside the container
 WORKDIR /app
 
-# Gradle fayllarini nusxalaymiz
-COPY . .
+# Copy the built JAR file to the container
+COPY build/libs/project-0.0.1-SNAPSHOT.jar app.jar
+COPY src/main/resources/application-docker.yml /app/application.yml
 
-# Gradle build jar yasaydi
-RUN ./gradlew build --no-daemon
+# Set environment variable for Spring profile
+ENV SPRING_CONFIG_NAME=application-docker
 
-# Jar faylni ishga tushiramiz
-ENTRYPOINT ["java", "-jar", "build/libs/project-0.0.1-SNAPSHOT.jar"]
+# Expose the port your Spring Boot app listens on (default is 8080)
+EXPOSE 8080
+
+# Run the application
+ENTRYPOINT ["java", "-jar", "app.jar"]
 
 
 
