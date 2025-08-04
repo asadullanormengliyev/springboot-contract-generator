@@ -26,3 +26,4 @@ COPY src/main/resources/application-docker.yml /app/application.yml
 EXPOSE 8080
 
 ENTRYPOINT ["java", "-jar", "app.jar"]
+
