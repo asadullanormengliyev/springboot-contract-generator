@@ -21,8 +21,6 @@ import java.nio.file.Paths
 import java.util.*
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
-import kotlin.collections.contains
-import kotlin.collections.get
 
 interface AdminService {
     fun create(request: AdminCreateRequest)
@@ -52,8 +50,20 @@ interface UserService {
 
     fun findByUserName(username: String): UserDto
     fun getAllUsersFilter(status: Status?, fullName: String?, lastName: String?, pageable: Pageable): Page<UserDto>
-    fun getAllOperatorsByOrganisation(userId: Long, search: String?, pageable: Pageable): Page<GetOneUser>
+    fun getAllOperatorsByOrganisationAndTemplate(
+        userId: Long,
+        templateId: Long,
+        search: String?,
+        pageable: Pageable
+    ): Page<OperatorWithPermissionDto>
+
     fun updatePassword(id: Long, newPassword: String, confirmPassword: String)
+    fun getAllOperatorsByOrganisationAndContract(
+        userId: Long,
+        contractId: Long,
+        search: String?,
+        pageable: Pageable
+    ): Page<OperatorWithPermissionDto>
 }
 
 interface OrganisationService {
@@ -75,6 +85,7 @@ interface OrganisationService {
 
     fun findUsersByOrganisationIdAndFilters(
         userId: Long,
+        userRole: UserRole?,
         fullName: String?,
         status: Status?,
         pageable: Pageable
@@ -90,7 +101,7 @@ interface TemplateService {
     fun deleteTemplate(id: Long)
     fun updateTemplate(id: Long, request: UpdateTemplateDto)
     fun getAllTemplateAndSearch(title: String?, pageable: Pageable): Page<GetOneTemplate>
-    fun updateTemplateKeyStatuses(requests: List<UpdateTemplateKeyEnabledRequest>)
+    fun updateTemplateKeyStatuses(requests: UpdateTemplateKeyEnabledRequest)
 }
 
 interface ContractService {
@@ -104,24 +115,36 @@ interface ContractService {
     fun getContractValueByContractId(contractId: Long): List<GetContractValueAndTemplateKeyDto>
     fun getContractFileBytes(contractId: Long): File
     fun getAllContractsByOrganisation(
-        organisationId: Long,
+        name: String?,
         title: String?,
         pageable: Pageable
     ): Page<ContractsByOrganizationDto>
+
+    fun getAllContractsSearchOrganisation(search: String?, pageable: Pageable): Page<ContractsByOrganizationDto>
 }
 
 interface ContractAssignmentService {
-    fun assignContractToOperator(contractId: Long, request: ContractAssignRequest, assignedById: Long)
+    fun assignContractToOperator(
+        contractId: Long,
+        request: ContractAssignRequest,
+        assignedById: Long
+    ): PermissionCountResponse
+
     fun getAllOperatorByContractId(contractId: Long): List<UserWithPermissionDto>
 }
 
 interface DownloadHistoryService {
-    fun getMyDownloads(downloadStatus: DownloadStatus?, userId: Long, pageable: Pageable): Page<DownloadHistoryResponse>
+    fun getMyDownloads(downloadStatus: DownloadStatus?,format: String?, userId: Long, pageable: Pageable): Page<DownloadHistoryResponse>
     fun getById(id: Long): File
 }
 
 interface TemplateAssignmentService {
-    fun assignTemplateToOperator(templateId: Long, request: TemplateAssignRequest, assignedById: Long)
+    fun assignTemplateToOperator(
+        templateId: Long,
+        request: TemplateAssignRequest,
+        assignedById: Long
+    ): PermissionCountResponse
+
     fun getAllOperatorByTemplate(templateId: Long): List<UserWithPermissionDto>
     fun searchTemplatesByOperatorIdAndTitle(operatorId: Long, title: String?, pageable: Pageable): Page<GetOneTemplate>
 }
@@ -130,7 +153,6 @@ interface TemplateAssignmentService {
 class AdminServiceImpl(
     private val userRepository: UserRepository,
     private val passwordEncoder: PasswordEncoder,
-    private val jwtService: JwtService
 ) : AdminService {
 
     override fun create(request: AdminCreateRequest) {
@@ -234,6 +256,7 @@ class OrganisationServiceImpl(
 
     override fun findUsersByOrganisationIdAndFilters(
         userId: Long,
+        userRole: UserRole?,
         fullName: String?,
         status: Status?,
         pageable: Pageable
@@ -247,6 +270,12 @@ class OrganisationServiceImpl(
         UserSpecification.nameLike(fullName)?.let {
             spec = spec?.and(it) ?: it
         }
+        UserSpecification.desc().let {
+            spec = spec?.and(it) ?: it
+        }
+        UserSpecification.roleEquals(userRole)?.let {
+            spec = spec?.and(it) ?: it
+        }
         return userRepository.findAll(spec, pageable).map { user -> GetOneUser.toResponse(user) }
     }
 
@@ -257,23 +286,25 @@ class UserServiceImpl(
     private val userRepository: UserRepository,
     private val organisationRepository: OrganisationRepository,
     private val passwordEncoder: PasswordEncoder,
-    private val jwtService: JwtService
+    private val jwtService: JwtService,
+    private val templateAssignmentRepository: TemplateAssignmentRepository,
+    private val contractAssignmentRepository: ContractAssignmentRepository
 ) : UserService {
 
     override fun create(request: UserCreateRequest) {
         val organisation = organisationRepository.findByIdAndDeletedFalse(request.organisationId)
             ?: throw OrganisationNotFoundException(request.organisationId)
+        if (userRepository.existsByUsername(request.username)){
+            throw UserNameAlreadyExistsException(request.username)
+        }
         request.run {
             val encodePassword = passwordEncoder.encode(request.password)
-            if (userRepository.existsByUsername(request.username)) {
-                throw UserNameAlreadyExistsException(username)
-            }
             val user = User(
                 fullName,
                 lastName,
                 username,
                 encodePassword,
-                role = UserRole.USER,
+                role = UserRole.OPERATOR,
                 status = Status.ACTIVE,
                 organisation
             )
@@ -284,17 +315,17 @@ class UserServiceImpl(
     fun add(request: UserRequest, userId: Long) {
         val organisation =
             userRepository.findOrganisationByUserId(userId) ?: throw OrganisationNotFoundException(userId)
+        if (userRepository.existsByUsername(request.username)){
+            throw UserNameAlreadyExistsException(request.username)
+        }
         request.run {
             val encodePassword = passwordEncoder.encode(request.password)
-            if (userRepository.existsByUsername(request.username)) {
-                throw UserNameAlreadyExistsException(username)
-            }
             val user = User(
                 fullName,
                 lastName,
                 username,
                 encodePassword,
-                role = UserRole.USER,
+                role = UserRole.OPERATOR,
                 status = Status.ACTIVE,
                 organisation
             )
@@ -334,9 +365,12 @@ class UserServiceImpl(
         val user = userRepository.findByIdAndDeletedFalse(id) ?: throw UserNotFoundException(id)
         updateDto.run {
             fullName?.let { user.fullName = it }
-            lastName?.let { str -> user.lastName = str }
+            lastName?.let { user.lastName = it }
             username?.let { user.username = it }
-            password?.let { user.password = passwordEncoder.encode(it) }
+            password?.let {
+                val encode = passwordEncoder.encode(it)
+                user.password = encode
+            }
         }
         userRepository.save(user)
     }
@@ -420,29 +454,98 @@ class UserServiceImpl(
                 .and(UserSpecification.statusEquals(status))
                 .and(UserSpecification.fullNameLike(fullName))
                 .and(UserSpecification.lastNameLike(lastName))
+                .and(UserSpecification.desc())
         return userRepository.findAll(spec, pageable).map { user -> UserDto.toResponse(user) }
     }
 
-    override fun getAllOperatorsByOrganisation(userId: Long, search: String?, pageable: Pageable): Page<GetOneUser> {
-        val organisation = userRepository.findOrganisationByUserId(userId)
-            ?: throw OrganisationNotFoundException(userId)
-        val trimmedSearch = search?.trim()?.takeIf { it.isNotBlank() }
-        val usersPage = if (trimmedSearch == null) {
-            userRepository.getAllOperatorsByOrganisationSimple(organisation.id!!, pageable)
-        } else {
-            userRepository.getAllOperatorsByOrganisationWithSearch(organisation.id!!, trimmedSearch, pageable)
+    override fun getAllOperatorsByOrganisationAndTemplate(
+        userId: Long,
+        templateId: Long,
+        search: String?,
+        pageable: Pageable
+    ): Page<OperatorWithPermissionDto> {
+        val user = userRepository.findByIdAndDeletedFalse(userId) ?: throw UserNotFoundException(userId)
+        val organisation = userRepository.findOrganisationByUserId(user.id!!) ?: throw OrganisationNotFoundException(
+            user.organisation?.id
+        )
+
+        val usersPage = userRepository.getAllOperatorsByOrganisationAndTemplate(templateId, organisation.id!!, search, pageable)
+
+        return usersPage.map { operator ->
+            val assignment = templateAssignmentRepository.findByTemplateIdAndOperatorId(templateId, operator.id!!)
+            val allPermissions = PermissionType.entries.toSet()
+            val permissionsMap = allPermissions.associateWith { perm ->
+                assignment?.permissions?.contains(perm) ?: false
+            }
+
+            val granted = permissionsMap.values.count { it }
+            val total = allPermissions.size
+
+            OperatorWithPermissionDto(
+                id = operator.id!!,
+                fullName = operator.fullName,
+                lastName = operator.lastName,
+                username = operator.username,
+                role = operator.role.name,
+                status = operator.status,
+                organisationId = operator.organisation?.id!!,
+                permissions = permissionsMap,
+                permissionCountResponse = PermissionCountResponse(
+                    totalPermission = total,
+                    grantedPermissions = granted
+                )
+            )
         }
-        return usersPage.map { GetOneUser.toResponse(it) }
     }
 
     override fun updatePassword(id: Long, newPassword: String, confirmPassword: String) {
-        val user = userRepository.findByIdAndDeletedFalse(id) ?: throw UserNotFoundException(id)
-        if (newPassword != confirmPassword) {
-            throw PasswordMismatchException(newPassword, confirmPassword)
+        userRepository.findByIdAndDeletedFalse(id)
+            ?.also {
+                if (newPassword != confirmPassword)
+                    throw PasswordMismatchException(newPassword, confirmPassword)
+            }?.apply {
+                password = passwordEncoder.encode(newPassword)
+            }?.also(userRepository::save)
+            ?: throw UserNotFoundException(id)
+    }
+
+    override fun getAllOperatorsByOrganisationAndContract(
+        userId: Long,
+        contractId: Long,
+        search: String?,
+        pageable: Pageable
+    ): Page<OperatorWithPermissionDto> {
+        val user = userRepository.findByIdAndDeletedFalse(userId) ?: throw UserNotFoundException(userId)
+        val organisation = userRepository.findOrganisationByUserId(user.id!!) ?: throw OrganisationNotFoundException(
+            user.organisation?.id
+        )
+        val users =
+            userRepository.getAllOperatorsByOrganisationAndContract(contractId, organisation.id!!, search, pageable)
+        return users.map { operator ->
+            val assignment = contractAssignmentRepository.findByContractIdAndOperatorId(contractId, operator.id!!)
+            val allPermissions = PermissionType.entries.toSet()
+            val permissionsMap = allPermissions.associateWith { perm ->
+                assignment?.permissions?.contains(perm) ?: false
+            }
+
+            val granted = permissionsMap.values.count { it }
+            val total = allPermissions.size
+
+            OperatorWithPermissionDto(
+                id = operator.id!!,
+                fullName = operator.fullName,
+                lastName = operator.lastName,
+                username = operator.username,
+                role = operator.role.name,
+                status = operator.status,
+                organisationId = operator.organisation?.id!!,
+                permissions = permissionsMap,
+                permissionCountResponse = PermissionCountResponse(
+                    totalPermission = total,
+                    grantedPermissions = granted
+                )
+            )
         }
-        val encode = passwordEncoder.encode(newPassword)
-        user.password = encode
-        userRepository.save(user)
     }
 
 }
@@ -450,7 +553,6 @@ class UserServiceImpl(
 @Service
 class TemplateServiceImpl(
     private val templateRepository: TemplateRepository,
-    private val organisationRepository: OrganisationRepository,
     private val templateKeyRepository: TemplateKeyRepository,
     private val userRepository: UserRepository
 ) : TemplateService {
@@ -458,6 +560,12 @@ class TemplateServiceImpl(
     override fun saveFile(title: String, file: MultipartFile, userId: Long) {
         val organisation =
             userRepository.findOrganisationByUserId(userId) ?: throw OrganisationNotFoundException(userId)
+        if (templateRepository.existsByTitleAndOrganisationId(title,organisation.id!!)){
+            throw TemplateTitleAlreadyExistsException(title)
+        }
+        if (file.size > 5*1024*1024) {
+            throw FileSizeExceededException(file.size)
+        }
         val originalName = file.originalFilename ?: "file.docx"
         val extension = originalName.substringAfterLast(".").lowercase()
         val uploadDir =
@@ -597,6 +705,9 @@ class TemplateServiceImpl(
         request.run {
             title?.let { template.title = it }
             file?.let { file ->
+                if (file.size > 5*1024*1024) {
+                    throw FileSizeExceededException(file.size)
+                }
                 val originalName = file.originalFilename ?: "updated_file.docx"
                 val extension = originalName.substringAfterLast(".").lowercase()
                 val uploadDir =
@@ -647,19 +758,18 @@ class TemplateServiceImpl(
             TemplateSpecification.notDeleted()
                 .and(TemplateSpecification.getAll(user))
                 .and(TemplateSpecification.titleSearch(title))
+                .and(TemplateSpecification.desc())
         return templateRepository.findAll(spec, pageable).map { template -> GetOneTemplate.toResponse(template) }
     }
 
     @Transactional
-    override fun updateTemplateKeyStatuses(requests: List<UpdateTemplateKeyEnabledRequest>) {
-        val ids = requests.map { request -> request.templateKeyId }
-        val keys = templateKeyRepository.findAllById(ids).associateBy { key -> key.id }
-        val updatedKeys = requests.mapNotNull { dto ->
-            val key = keys[dto.templateKeyId] ?: return@mapNotNull null
-            key.enabled = dto.enabled
-            key
-        }
-        templateKeyRepository.saveAll(updatedKeys)
+    override fun updateTemplateKeyStatuses(request: UpdateTemplateKeyEnabledRequest) {
+        val key =
+            templateKeyRepository.findByIdAndDeletedFalse(request.templateKeyId) ?: throw TemplateKeyNotFoundException(
+                request.templateKeyId
+            )
+        key.enabled = request.enabled
+        templateKeyRepository.save(key)
     }
 
     fun findByTemplateKeyByTemplateId(templateKeyId: Long): Template {
@@ -675,7 +785,6 @@ class ContractServiceImpl(
     private val contractRepository: ContractRepository,
     private val templateRepository: TemplateRepository,
     private val templateKeyRepository: TemplateKeyRepository,
-    private val organisationRepository: OrganisationRepository,
     private val userRepository: UserRepository,
     private val contractValueRepository: ContractValueRepository,
     private val downloadHistoryRepository: DownloadHistoryRepository
@@ -778,7 +887,11 @@ class ContractServiceImpl(
             }
 
             if (!templateKey.enabled && (value == null || value.isBlank())) {
-                return@mapNotNull null
+                return@mapNotNull ContractValue(
+                    value = templateKey.keyName,
+                    templateKey = templateKey,
+                    contract = contract
+                )
             }
 
             ContractValue(
@@ -868,8 +981,7 @@ class ContractServiceImpl(
         userId: Long
     ) {
         val user = userRepository.findByIdAndDeletedFalse(userId) ?: throw UserNotFoundException(userId)
-        val outputDir =
-            File("/home/asadulla/IdeaProjects/Spring/SpringFramework/SpringBoot/Kotlin/project/uploads/generated")
+        val outputDir = File("/home/asadulla/IdeaProjects/Spring/SpringFramework/SpringBoot/Kotlin/project/uploads/generated")
         if (!outputDir.exists()) outputDir.mkdirs()
 
         val generatedFiles = mutableListOf<File>()
@@ -912,8 +1024,7 @@ class ContractServiceImpl(
     }
 
     private fun createZipFile(files: List<File>): File {
-        val zipFile =
-            File("/home/asadulla/IdeaProjects/Spring/SpringFramework/SpringBoot/Kotlin/project/uploads/zip${UUID.randomUUID()}.zip")
+        val zipFile = File("/home/asadulla/IdeaProjects/Spring/SpringFramework/SpringBoot/Kotlin/project/uploads/zip${UUID.randomUUID()}.zip")
         ZipOutputStream(FileOutputStream(zipFile)).use { zipOutputStream ->
             files.forEach { file ->
                 FileInputStream(file).use { fil ->
@@ -938,6 +1049,7 @@ class ContractServiceImpl(
         var spec: Specification<Contract> = ContractSpecification.notDeleted()
         ContractSpecification.templateTitleLike(title)?.let { spec = spec.and(it) }
         spec = spec.and(ContractSpecification.byUser(user))
+        spec = spec.and(ContractSpecification.desc())
 
         return contractRepository.findAll(spec, pageable)
             .map { contract -> GetOneContract.toResponse(contract) }
@@ -991,11 +1103,19 @@ class ContractServiceImpl(
     }
 
     override fun getAllContractsByOrganisation(
-        organisationId: Long,
+        name: String?,
         title: String?,
         pageable: Pageable
     ): Page<ContractsByOrganizationDto> {
-        val contracts = contractRepository.getAllContractsByOrganisation(organisationId, title, pageable)
+        val contracts = contractRepository.getAllContractsByOrganisation(name, title, pageable)
+        return contracts.map { contract -> ContractsByOrganizationDto.toResponse(contract) }
+    }
+
+    override fun getAllContractsSearchOrganisation(
+        search: String?,
+        pageable: Pageable
+    ): Page<ContractsByOrganizationDto> {
+        val contracts = contractRepository.getAllContractsSearchByOrganisation(search, pageable)
         return contracts.map { contract -> ContractsByOrganizationDto.toResponse(contract) }
     }
 
@@ -1008,52 +1128,39 @@ class ContractAssignmentServiceImpl(
     private val contractAssignmentRepository: ContractAssignmentRepository
 ) : ContractAssignmentService {
 
-    override fun assignContractToOperator(contractId: Long, request: ContractAssignRequest, assignedById: Long) {
-        val contract = contractRepository.findById(contractId)
-            .orElseThrow { ContractNotFoundException(contractId) }
+    override fun assignContractToOperator(
+        contractId: Long,
+        request: ContractAssignRequest,
+        assignedById: Long
+    ): PermissionCountResponse {
+        val contract =
+            contractRepository.findByIdAndDeletedFalse(contractId) ?: throw ContractNotFoundException(contractId)
+        val operator = userRepository.findByIdAndDeletedFalse(request.operatorId)
+            ?: throw UserNotFoundException(request.operatorId)
+        val user = userRepository.findByIdAndDeletedFalse(assignedById) ?: throw UserNotFoundException(assignedById)
 
-        val assignedBy = userRepository.findById(assignedById)
-            .orElseThrow { UserNotFoundException(assignedById) }
+        var assignment = contractAssignmentRepository.findByContractIdAndOperatorId(contractId, operator.id!!)
+        if (assignment == null) {
+            assignment = ContractAssignment(
+                contract = contract,
+                operator = operator,
+                assignedBy = user,
+                permissions = mutableSetOf()
+            )
+        }
 
-        val flatMap = request.assignments.flatMap { dto ->
-            dto.operatorIds.map { operatorId ->
-                OperatorPermissionDto(operatorId, dto.permissions)
+        request.permissions.forEach { dto ->
+            if (dto.enabled) {
+                assignment.permissions.add(dto.permission)
+            } else {
+                assignment.permissions.remove(dto.permission)
             }
         }
 
-        val existingAssignments = contractAssignmentRepository.findAllByContractId(contractId)
-        val existingOperatorIds = existingAssignments.map { it.operator.id }.toSet()
-
-        val newAssignmentsByOperatorId = flatMap.associateBy { it.operatorId }
-        val newOperatorIds = newAssignmentsByOperatorId.keys
-
-        val toAddIds = newOperatorIds.subtract(existingOperatorIds)
-        val operatorsToAdd = userRepository.findAllById(toAddIds.toList())
-
-        operatorsToAdd.forEach { operator ->
-            val operatorDto = newAssignmentsByOperatorId[operator.id]
-            if (operatorDto != null) {
-                val assignment = ContractAssignment(
-                    contract = contract,
-                    operator = operator,
-                    assignedBy = assignedBy,
-                    permissions = operatorDto.permissions.toMutableSet()
-                )
-                contractAssignmentRepository.save(assignment)
-            }
-        }
-
-        val toRemove = existingAssignments.filter { it.operator.id !in newOperatorIds }
-        contractAssignmentRepository.deleteAll(toRemove)
-
-        val toUpdate = existingAssignments.filter { it.operator.id in newOperatorIds }
-        toUpdate.forEach { assignment ->
-            val updatedPermissions = newAssignmentsByOperatorId[assignment.operator.id]?.permissions ?: emptySet()
-            if (assignment.permissions != updatedPermissions) {
-                assignment.permissions = updatedPermissions.toMutableSet()
-                contractAssignmentRepository.save(assignment)
-            }
-        }
+        contractAssignmentRepository.save(assignment)
+        val totalPermissions = PermissionType.entries.size
+        val grantedPermissions = assignment.permissions.size
+        return PermissionCountResponse(totalPermissions, grantedPermissions)
     }
 
     override fun getAllOperatorByContractId(contractId: Long): List<UserWithPermissionDto> {
@@ -1061,33 +1168,54 @@ class ContractAssignmentServiceImpl(
         return assignments.map { UserWithPermissionDto.fromAssignment(it) }
     }
 
-    fun getOperatorAssignedContract(userId: Long): OperatorAssignedContractRequest {
-        val findAllByTemplateByOperator = contractAssignmentRepository.findAllByContractByOperator(userId)
-        val map = findAllByTemplateByOperator.map { assignment ->
+    fun getOperatorAssignedContract(userId: Long): OperatorAssignedContractResponse {
+        val user = userRepository.findByIdAndDeletedFalse(userId) ?: throw UserNotFoundException(userId)
+        val organisation = userRepository.findOrganisationByUserId(user.id!!) ?: throw OrganisationNotFoundException(user.organisation?.id)
+        val contracts = contractRepository.findAllByOrganisationId(organisation.id!!)
+        val assignments = contractAssignmentRepository.findAllByContractByOperator(userId)
+
+        val assignedDtos = contracts.map { contract ->
+            val assignment = assignments.firstOrNull { it.contract.id == contract.id }
+            val permissionsMap = if (contract.operator.id == userId) {
+                PermissionType.entries.associateWith { true }
+            } else {
+                PermissionType.entries.associateWith { perm ->
+                    assignment?.permissions?.contains(perm) ?: false
+                }
+            }
             OperatorAssignedContractDto(
-                assignment.contract.id!!,
-                assignment.permissions
+                contractId = contract.id!!,
+                permissions = permissionsMap
             )
         }
-        return OperatorAssignedContractRequest(map)
+
+        return OperatorAssignedContractResponse(assignedDtos)
     }
 
 }
 
 @Service
 class DownloadHistoryServiceImpl(
-    private val downloadHistoryRepository: DownloadHistoryRepository
+    private val downloadHistoryRepository: DownloadHistoryRepository,
+    private val userRepository: UserRepository
 ) : DownloadHistoryService {
 
     override fun getMyDownloads(
         downloadStatus: DownloadStatus?,
+        format: String?,
         userId: Long,
         pageable: Pageable
     ): Page<DownloadHistoryResponse> {
+        val user = userRepository.findByIdAndDeletedFalse(userId) ?: throw UserNotFoundException(userId)
+        val organisation = userRepository.findOrganisationByUserId(user.id!!) ?: throw OrganisationNotFoundException(
+            user.organisation?.id
+        )
         val spec: Specification<DownloadHistory> =
             DownloadHistorySpecification.notDeleted()
                 .and(DownloadHistorySpecification.statusEquals(downloadStatus))
-                .and(DownloadHistorySpecification.byUser(userId))
+                .and(DownloadHistorySpecification.byUserOrganisationId(organisation.id!!))
+                .and(DownloadHistorySpecification.ascend())
+                .and(DownloadHistorySpecification.format(format))
         return downloadHistoryRepository.findAll(spec, pageable)
             .map { response -> DownloadHistoryResponse.from(response) }
     }
@@ -1107,59 +1235,42 @@ class DownloadHistoryServiceImpl(
 class TemplateAssignedServiceImpl(
     private val templateRepository: TemplateRepository,
     private val userRepository: UserRepository,
-    private val templateAssignmentRepository: TemplateAssignmentRepository
-) : TemplateAssignmentService {
+    private val templateAssignmentRepository: TemplateAssignmentRepository) : TemplateAssignmentService {
 
     override fun assignTemplateToOperator(
         templateId: Long,
         request: TemplateAssignRequest,
         assignedById: Long
-    ) {
+    ): PermissionCountResponse {
         val template =
             templateRepository.findByIdAndDeletedFalse(templateId) ?: throw TemplateNotFoundException(templateId)
+        val operator = userRepository.findByIdAndDeletedFalse(request.operatorId)
+            ?: throw UserNotFoundException(request.operatorId)
         val user = userRepository.findByIdAndDeletedFalse(assignedById) ?: throw UserNotFoundException(assignedById)
 
-        val flatMap = request.assignments.flatMap { dto ->
-            dto.operatorIds.map { operatorId ->
-                OperatorPermissionDto(operatorId, dto.permissions)
-            }
+        var assignment = templateAssignmentRepository.findByTemplateIdAndOperatorId(templateId, operator.id!!)
+        if (assignment == null) {
+            assignment = TemplateAssignment(
+                template = template,
+                operator = operator,
+                assignedBy = user,
+                permissions = mutableSetOf()
+            )
         }
 
-        val findAllByTemplateId = templateAssignmentRepository.findAllByTemplateId(templateId)
-        val existingOperatorIds = findAllByTemplateId.map { it.operator.id }.toSet()
-
-        val newAssignmentsByOperatorId = flatMap.associateBy { it.operatorId }
-        val newOperatorIds = newAssignmentsByOperatorId.keys
-
-        val toAddIds = newOperatorIds.subtract(existingOperatorIds)
-        val operatorsToAdd = userRepository.findAllById(toAddIds.toList())
-
-        operatorsToAdd.forEach { operator ->
-            val operatorDto = newAssignmentsByOperatorId[operator.id]
-            if (operatorDto != null) {
-
-                val assignment = TemplateAssignment(
-                    template = template,
-                    operator = operator,
-                    assignedBy = user,
-                    permissions = operatorDto.permissions.toMutableSet()
-                )
-                templateAssignmentRepository.save(assignment)
+        request.permissions.forEach { dto ->
+            if (dto.enabled) {
+                assignment.permissions.add(dto.permission)
+            } else {
+                assignment.permissions.remove(dto.permission)
             }
         }
+        templateAssignmentRepository.save(assignment)
 
-        val toRemove = findAllByTemplateId.filter { it.operator.id !in newOperatorIds }
-        templateAssignmentRepository.deleteAll(toRemove)
+        val totalPermissions = PermissionType.entries.size
+        val grantedPermissions = assignment.permissions.size
 
-        val toUpdate = findAllByTemplateId.filter { it.operator.id in newOperatorIds }
-        toUpdate.forEach { assignment ->
-            val updatedPermissions = newAssignmentsByOperatorId[assignment.operator.id]?.permissions ?: emptySet()
-            if (assignment.permissions != updatedPermissions) {
-                assignment.permissions = updatedPermissions.toMutableSet()
-                templateAssignmentRepository.save(assignment)
-            }
-        }
-
+        return PermissionCountResponse(totalPermissions, grantedPermissions)
     }
 
     override fun getAllOperatorByTemplate(templateId: Long): List<UserWithPermissionDto> {
@@ -1176,16 +1287,29 @@ class TemplateAssignedServiceImpl(
         return templates.map { template -> GetOneTemplate.toResponse(template) }
     }
 
-    fun getOperatorAssignedTemplate(userId: Long): OperatorAssignedRequest {
-        val findAllByTemplateByOperator = templateAssignmentRepository.findAllByTemplateByOperator(userId)
-        val map = findAllByTemplateByOperator.map { assignment ->
+    fun getOperatorAssignedTemplate(userId: Long): OperatorAssignedResponse {
+        val user = userRepository.findByIdAndDeletedFalse(userId) ?: throw UserNotFoundException(userId)
+        val organisation = userRepository.findOrganisationByUserId(user.id!!) ?: throw OrganisationNotFoundException(user.organisation?.id)
+
+        val templates = templateRepository.findAllTemplateByOrganisationAndTemplateAssignment(organisation.id!!)
+        val assignments = templateAssignmentRepository.findAllByTemplateByOperator(userId)
+
+        val assignedDtos = templates.map { template ->
+            val assignment = assignments.firstOrNull { it.template.id == template.id }
+
+            val permissionsMap = PermissionType.entries.associateWith { perm ->
+                assignment?.permissions?.contains(perm) ?: false
+            }
+
             OperatorAssignedDto(
-                assignment.template.id!!,
-                assignment.permissions
+                templateId = template.id!!,
+                permissions = permissionsMap
             )
         }
-        return OperatorAssignedRequest(map)
+
+        return OperatorAssignedResponse(assigned = assignedDtos)
     }
+
 }
 
 @Service
@@ -1209,6 +1333,5 @@ class PermissionService(
             throw OperatorPermissionException(permissionType)
         }
     }
-
 
 }

@@ -26,16 +26,14 @@ interface BaseRepository<T : BaseEntity> : JpaRepository<T, Long>, JpaSpecificat
 }
 
 class BaseRepositoryImpl<T : BaseEntity>(
-    entityInformation: JpaEntityInformation<T, Long>,
-    entityManager: EntityManager
+    entityInformation: JpaEntityInformation<T, Long>, entityManager: EntityManager
 ) : SimpleJpaRepository<T, Long>(entityInformation, entityManager), BaseRepository<T> {
 
     val isNotDeletedSpecification = Specification<T> { root, _, cb ->
         cb.equal(root.get<Boolean>("deleted"), false)
     }
 
-    override fun findByIdAndDeletedFalse(id: Long): T? =
-        findByIdOrNull(id)?.run { if (deleted) null else this }
+    override fun findByIdAndDeletedFalse(id: Long): T? = findByIdOrNull(id)?.run { if (deleted) null else this }
 
     @Transactional
     override fun trash(id: Long): T? = findByIdOrNull(id)?.run {
@@ -45,8 +43,7 @@ class BaseRepositoryImpl<T : BaseEntity>(
 
     override fun findAllNotDeleted(): List<T> = findAll(isNotDeletedSpecification)
 
-    override fun findAllNotDeleted(pageable: Pageable): Page<T> =
-        findAll(isNotDeletedSpecification, pageable)
+    override fun findAllNotDeleted(pageable: Pageable): Page<T> = findAll(isNotDeletedSpecification, pageable)
 
     @Transactional
     override fun trashList(ids: List<Long>): List<T> = ids.map { trash(it)!! }
@@ -55,8 +52,8 @@ class BaseRepositoryImpl<T : BaseEntity>(
 @Repository
 interface UserRepository : BaseRepository<User> {
     fun findByUsername(username: String): User?
-    fun existsByUsername(username: String): Boolean
     fun findByUsernameAndDeletedFalse(username: String): User?
+    fun existsByUsername(username: String): Boolean
 
     @Query("SELECT u FROM User u WHERE u.deleted = false AND u.role = 'DIRECTOR'")
     fun findAllDirectors(pageable: Pageable): Page<User>
@@ -64,7 +61,7 @@ interface UserRepository : BaseRepository<User> {
     @Query("select u from User u where u.deleted = false and u.role = 'OPERATOR'")
     fun findAllOperators(pageable: Pageable): Page<User>
 
-    @Query("select u from User u inner join Organisation o on o.id = u.organisation.id where o.id =:organisationId and o.deleted = false and u.deleted = false")
+    @Query("select u from User u inner join Organisation o on o.id = u.organisation.id where o.id =:organisationId and o.deleted = false and u.deleted = false order by u.createdDate desc ")
     fun getAllUsersByOrganisation(@Param("organisationId") organisationId: Long): List<User>
 
     @Query("select u from User u inner join Organisation o on o.id = u.organisation.id where o.id =:organisationId and u.deleted = false and u.role = 'DIRECTOR'")
@@ -73,48 +70,52 @@ interface UserRepository : BaseRepository<User> {
     @Query("SELECT u.organisation FROM User u WHERE u.id = :userId")
     fun findOrganisationByUserId(@Param("userId") userId: Long): Organisation?
 
-    /*@Query("select u from User u where u.organisation.id =:organisationId and u.organisation.deleted = false and u.deleted = false and u.role = 'OPERATOR' and (lower(u.fullName) like lower(concat('%', :search, '%')) or lower(u.lastName) like lower(concat('%', :search, '%')))")
-    fun getAllOperatorsByOrganisation(@Param("organisationId") organisationId: Long,pageable: Pageable,
-                                      @Param("search") search: String?): Page<User>*/
-
-    @Query("""
-    select u from User u 
-    where u.organisation.id = :organisationId 
-      and u.organisation.deleted = false 
-      and u.deleted = false 
-      and u.role = 'OPERATOR'
-""")
-    fun getAllOperatorsByOrganisationSimple(
-        @Param("organisationId") organisationId: Long,
-        pageable: Pageable
-    ): Page<User>
-
-    @Query("""
-    select u from User u 
-    where u.organisation.id = :organisationId 
-      and u.organisation.deleted = false 
-      and u.deleted = false 
+    @Query(
+        """
+    select distinct u from User u left join TemplateAssignment ta on ta.operator.id = u.id
+    and ta.template.id =:templateId and ta.deleted = false 
+    where u.organisation.id = :organisationId
+      and u.organisation.deleted = false
+      and u.deleted = false
       and u.role = 'OPERATOR'
       and (
-        lower(cast(u.fullName as string)) like lower(concat('%', :search, '%')) 
-        or lower(cast(u.lastName as string)) like lower(concat('%', :search, '%'))
+        :search is null 
+        or :search = '' 
+        or lower(u.fullName) like lower(concat('%', :search, '%'))
+        or lower(u.lastName) like lower(concat('%', :search, '%'))
       )
-""")
-    fun getAllOperatorsByOrganisationWithSearch(
+      order by u.createdDate desc
+"""
+    )
+    fun getAllOperatorsByOrganisationAndTemplate(
+        @Param("templateId") templateId: Long,
         @Param("organisationId") organisationId: Long,
-        @Param("search") search: String,
+        @Param("search") search: String?,
         pageable: Pageable
     ): Page<User>
 
+    @Query(
+        """select distinct u from User u left join ContractAssignment ca on ca.operator.id = u.id 
+        and ca.contract.id =:contractId and ca.deleted = false where u.organisation.id =:organisationId
+        and u.organisation.deleted = false and u.deleted = false and u.role = 'OPERATOR'
+        and (:search is null or :search = '' or lower(u.fullName) like lower(concat('%', :search, '%'))
+            or lower(u.lastName) like lower(concat('%', :search, '%')) ) order by u.createdDate desc  
+    """
+    )
+    fun getAllOperatorsByOrganisationAndContract(
+        @Param("contractId") contractId: Long,
+        @Param("organisationId") organisationId: Long,
+        @Param("search") search: String?,
+        pageable: Pageable
+    ): Page<User>
 
-    fun existsByUsernameAndDeletedFalse(username: String): Boolean
 }
 
 @Repository
 interface OrganisationRepository : BaseRepository<Organisation> {
     fun existsByNameAndDeletedFalse(name: String): Boolean
 
-    @Query("select o from Organisation o where o.address = :address and o.deleted = false")
+    @Query("select o from Organisation o where o.address = :address and o.deleted = false order by o.createdDate desc ")
     fun searchOrganisationByAddress(@Param("address") address: String): List<Organisation>
 
     @Query("select o from Organisation o where lower(o.name) like lower(concat('%', :name, '%')) and o.deleted = false")
@@ -127,6 +128,21 @@ interface OrganisationRepository : BaseRepository<Organisation> {
 
 @Repository
 interface TemplateRepository : BaseRepository<Template> {
+
+    @Query("""
+    select distinct t 
+    from Template t
+    left join TemplateAssignment ta 
+        on ta.template.id = t.id and ta.deleted = false
+    where t.organisation.id = :organisationId
+      and t.deleted = false
+      and t.organisation.deleted = false
+""")
+    fun findAllTemplateByOrganisationAndTemplateAssignment(
+        @Param("organisationId") organisationId: Long
+    ): List<Template>
+
+    fun existsByTitleAndOrganisationId(title: String,organisationId: Long): Boolean
 
 }
 
@@ -141,10 +157,40 @@ interface ContractRepository : BaseRepository<Contract> {
     )
     fun findByIdWithValues(@Param("id") id: Long): Contract?
 
-    @Query("select c from Contract c where c.organisation.id =:organisationId and c.organisation.deleted = false and c.deleted = false and (:title IS NULL OR :title = '' OR LOWER(c.template.title) LIKE LOWER(CONCAT('%', :title, '%')))")
-    fun getAllContractsByOrganisation(@Param("organisationId") organisationId: Long,
-                                       @Param("title") title: String?,
-                                       pageable: Pageable): Page<Contract>
+    @Query(
+        """select c from Contract c where c.deleted = false and c.organisation.deleted = false
+      and (
+        :name is null or :name = '' or
+        c.organisation.name = :name
+      )
+      and (
+        :title is null or :title = '' or
+        LOWER(c.template.title) LIKE LOWER(CONCAT('%', :title, '%'))
+      )
+    order by c.createdDate desc 
+"""
+    )
+    fun getAllContractsByOrganisation(
+        @Param("name") name: String?, @Param("title") title: String?, pageable: Pageable
+    ): Page<Contract>
+
+    @Query(
+        """select c from Contract c where c.deleted = false and c.organisation.deleted = false and 
+        (:search is null or c.organisation.name ilike concat('%',:search,'%')) order by c.createdDate desc
+    """
+    )
+    fun getAllContractsSearchByOrganisation(@Param("search") search: String?, pageable: Pageable): Page<Contract>
+
+    @Query("""select distinct c 
+        from Contract c
+        left join ContractAssignment ca 
+        on ca.contract.id = c.id and ca.deleted = false 
+        where c.organisation.id =:organisationId
+        and c.deleted = false and c.organisation.deleted = false
+    """)
+    fun findAllContractByOrganisationAndContractAssignment(@Param("organisationId") organisationId: Long): List<Contract>
+
+    fun findAllByOrganisationId(organisationId: Long): List<Contract>
 }
 
 @Repository
@@ -164,7 +210,6 @@ interface TemplateKeyRepository : BaseRepository<TemplateKey> {
 
 @Repository
 interface ContractValueRepository : BaseRepository<ContractValue> {
-    fun findByContractIdAndTemplateKeyId(contractId: Long, templateKeyId: Long): ContractValue?
 
     fun findAllByContractId(contractId: Long): List<ContractValue>
 
@@ -175,52 +220,46 @@ interface ContractValueRepository : BaseRepository<ContractValue> {
 @Repository
 interface ContractAssignmentRepository : BaseRepository<ContractAssignment> {
     fun findByContractIdAndOperatorId(contractId: Long, operatorId: Long): ContractAssignment?
-    fun findAllByContractId(contractId: Long): List<ContractAssignment>
-
-    @Query("select ca.operator from ContractAssignment ca where ca.contract.id =:contractId and ca.deleted = false and ca.contract.deleted = false")
-    fun getAllContractAssignmentByOperator(contractId: Long): List<User>
-
-    @Query("""
+    @Query(
+        """
     select ca from ContractAssignment ca 
     where ca.contract.id = :contractId 
       and ca.deleted = false 
-      and ca.contract.deleted = false 
-""")
+      and ca.contract.deleted = false order by ca.createdDate asc
+"""
+    )
     fun findAllByContractIdWithOperator(@Param("contractId") contractId: Long): List<ContractAssignment>
 
-    @Query("select ca from ContractAssignment ca where ca.operator.id =:userId and ca.deleted = false and ca.contract.deleted = false ")
+    @Query("select ca from ContractAssignment ca where ca.operator.id =:userId and ca.deleted = false and ca.contract.deleted = false order by ca.createdDate desc ")
     fun findAllByContractByOperator(@Param("userId") userId: Long): List<ContractAssignment>
 
 }
 
 @Repository
 interface DownloadHistoryRepository : BaseRepository<DownloadHistory> {
-    fun findAllByUser(user: User): List<DownloadHistory>
-    fun findAllByUserAndDeletedFalse(user: User, pageable: Pageable): Page<DownloadHistory>
+
 }
 
 @Repository
 interface TemplateAssignmentRepository : BaseRepository<TemplateAssignment> {
     fun findByTemplateIdAndOperatorId(templateId: Long, operatorId: Long): TemplateAssignment?
 
-    fun findAllByTemplateId(templateId: Long) : List<TemplateAssignment>
-
-    @Query("select ta from TemplateAssignment ta where ta.template.id =:templateId and ta.deleted = false and ta.template.deleted = false")
+    @Query("select ta from TemplateAssignment ta where ta.template.id =:templateId and ta.deleted = false and ta.template.deleted = false order by ta.createdDate desc ")
     fun findAllByTemplateIdWithOperator(@Param("templateId") templateId: Long): List<TemplateAssignment>
 
-    @Query("select ta from TemplateAssignment ta where ta.operator.id =:userId and ta.deleted = false and ta.template.deleted = false ")
+    @Query("select ta from TemplateAssignment ta where ta.operator.id =:userId and ta.deleted = false and ta.template.deleted = false order by ta.createdDate desc ")
     fun findAllByTemplateByOperator(@Param("userId") userId: Long): List<TemplateAssignment>
 
-    @Query("""
+    @Query(
+        """
     SELECT ta.template 
     FROM TemplateAssignment ta 
     WHERE ta.operator.id = :operatorId
-      AND (:search IS NULL OR :search = '' OR LOWER(ta.template.title) LIKE LOWER(CONCAT('%', :search, '%')))
-""")
+      AND (:search IS NULL OR :search = '' OR LOWER(ta.template.title) LIKE LOWER(CONCAT('%', :search, '%'))) order by ta.createdDate asc 
+"""
+    )
     fun searchTemplatesByOperatorIdAndTitle(
-        @Param("operatorId") operatorId: Long,
-        @Param("search") search: String?,
-        pageable: Pageable
+        @Param("operatorId") operatorId: Long, @Param("search") search: String?, pageable: Pageable
     ): Page<Template>
 
 }

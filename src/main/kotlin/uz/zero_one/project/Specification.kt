@@ -1,6 +1,7 @@
 package uz.zero_one.project
 
 import org.springframework.data.jpa.domain.Specification
+import java.util.Date
 
 class OrganisationSpecification {
 
@@ -101,6 +102,12 @@ class UserSpecification {
             }
         }
 
+        fun desc(): Specification<User> {
+            return Specification { root, query, builder ->
+                query?.orderBy(builder.desc(root.get<Date>("createdDate")))
+                null
+            }
+        }
     }
 }
 
@@ -124,6 +131,13 @@ class TemplateSpecification{
         fun getAll(user: User): Specification<Template>{
             return Specification{root, query, builder ->
                 builder.equal(root.get<Organisation>("organisation"), user.organisation)
+            }
+        }
+
+        fun desc(): Specification<Template> {
+            return Specification { root, query, builder ->
+                query?.orderBy(builder.desc(root.get<Date>("createdDate")))
+                null
             }
         }
 
@@ -151,20 +165,16 @@ class ContractSpecification{
         }
 
         fun byUser(user: User): Specification<Contract> {
-            return when (user.role) {
-                UserRole.DIRECTOR -> Specification { root, _, cb ->
-                    cb.equal(root.get<Organisation>("organisation"), user.organisation)
-                }
-                UserRole.OPERATOR -> Specification { root, query, cb ->
-                    val subquery = query?.subquery(Long::class.java)
-                    val assignmentRoot = subquery?.from(ContractAssignment::class.java)
-                    subquery?.select(assignmentRoot?.get<Contract>("contract")?.get<Long>("id"))
-                        ?.where(cb.equal(assignmentRoot?.get<User>("operator")?.get<Long>("id"), user.id))
-                    val assignedContracts = cb.`in`(root.get<Long>("id")).value(subquery)
-                    val createdContracts = cb.equal(root.get<User>("operator").get<Long>("id"), user.id)
-                    cb.or(assignedContracts, createdContracts)
-                }
-                else -> Specification { _, _, cb -> cb.disjunction() }
+            return Specification { root, _, cb ->
+                cb.equal(root.get<Organisation>("organisation"), user.organisation)
+            }
+        }
+
+
+        fun desc(): Specification<Contract> {
+            return Specification { root, query, builder ->
+                query?.orderBy(builder.desc(root.get<Date>("createdDate")))
+                null
             }
         }
 
@@ -174,9 +184,13 @@ class ContractSpecification{
 class DownloadHistorySpecification{
     companion object{
 
-        fun byUser(userId: Long): Specification<DownloadHistory> {
+        fun byUserOrganisationId(organisationId: Long): Specification<DownloadHistory> {
             return Specification { root, _, cb ->
-                cb.equal(root.get<User>("user").get<Long>("id"), userId)
+                val organisationJoin = root
+                    .join<DownloadHistory, User>("user")
+                    .join<User, Organisation>("organisation")
+
+                cb.equal(organisationJoin.get<Long>("id"), organisationId)
             }
         }
 
@@ -192,6 +206,24 @@ class DownloadHistorySpecification{
             return Specification{root, query, builder ->
                 builder.equal(root.get<Boolean>("deleted"),false)
             }
+        }
+
+        fun ascend(): Specification<DownloadHistory> {
+            return Specification { root, query, builder ->
+                query?.orderBy(builder.asc(root.get<Date>("createdDate")))
+                null
+            }
+        }
+
+        fun format(format: String?): Specification<DownloadHistory>?{
+           return  if (!format.isNullOrBlank()){
+                 Specification{root, query, builder ->
+                     builder.equal(
+                         builder.lower(root.get<String>("format")),
+                         format.lowercase()
+                     )
+                 }
+           }else null
         }
     }
 }

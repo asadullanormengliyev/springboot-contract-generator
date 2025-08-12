@@ -114,3 +114,15 @@ class PasswordMismatchException(val newPassword: String,val confirmPassword: Str
         return ErrorCode.PASSWORD_MISS_MATCH_EXCEPTION
     }
 }
+
+class TemplateTitleAlreadyExistsException(val title: String): DemoExceptions() {
+    override fun errorType(): ErrorCode {
+        return ErrorCode.TEMPLATE_TITLE_ALREADY_EXISTS
+    }
+}
+
+class FileSizeExceededException(val size: Long): DemoExceptions() {
+    override fun errorType(): ErrorCode {
+        return ErrorCode.FILE_SIZE_EXCEEDED_EXCEPTION
+    }
+}

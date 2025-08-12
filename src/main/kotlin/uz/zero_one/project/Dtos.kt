@@ -67,7 +67,7 @@ data class UserCreateRequest(
     val lastName: String,
     val username: String,
     val password: String,
-    val role: UserRole? = UserRole.USER,
+    val role: UserRole? = UserRole.OPERATOR,
     val status: Status? = Status.ACTIVE,
     val organisationId: Long
 )
@@ -77,11 +77,9 @@ data class UserRequest(
     val lastName: String,
     val username: String,
     val password: String,
-    val role: UserRole? = UserRole.USER,
+    val role: UserRole? = UserRole.OPERATOR,
     val status: Status? = Status.ACTIVE,
 )
-
-
 
 data class GetOneUser(
     val id: Long,
@@ -216,19 +214,9 @@ data class UpdateTemplateKeyEnabledRequest(
 )
 
 data class ContractAssignRequest(
-    val assignments: List<OperatorPermissionsDto>
-)
-
-data class OperatorPermissionsDto(
-    val operatorIds: List<Long>,
-    val permissions: Set<PermissionType>
-)
-
-data class OperatorPermissionDto(
     val operatorId: Long,
-    val permissions: Set<PermissionType>
+    val permissions: Set<PermissionDto>
 )
-
 
 data class GenerateRequest(
     val contractIds: List<Long>,
@@ -244,7 +232,7 @@ data class DownloadHistoryResponse(
 ) {
     companion object {
         fun from(entity: DownloadHistory): DownloadHistoryResponse {
-            val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+            val formatter = SimpleDateFormat("dd-MM-yyyy HH:mm:ss")
             return DownloadHistoryResponse(
                 id = entity.id!!,
                 filePath = entity.filePath,
@@ -270,17 +258,22 @@ data class GetContractValueAndTemplateKeyDto(
     val templateKeyId: Long,
     val contractValueId: Long,
     val keyName: String,
-    val value: String,
+    val value: String?,
     val enabled: Boolean
 ){
     companion object{
         fun toResponse(contractValue: ContractValue):GetContractValueAndTemplateKeyDto{
             val cleanedKeyName = contractValue.templateKey.keyName.removePrefix("{").removeSuffix("}")
+            val cleanedValue = if (contractValue.value.startsWith("{") == true && contractValue.value.endsWith("}") == true) {
+                null
+            } else {
+                contractValue.value
+            }
             return GetContractValueAndTemplateKeyDto(
                 templateKeyId = contractValue.templateKey.id!!,
                 contractValueId=contractValue.id!!,
                 keyName = cleanedKeyName,
-                value = contractValue.value,
+                value = cleanedValue,
                 enabled = contractValue.templateKey.enabled
             )
         }
@@ -288,7 +281,18 @@ data class GetContractValueAndTemplateKeyDto(
 }
 
 data class TemplateAssignRequest(
-    val assignments: List<OperatorPermissionsDto>
+    val operatorId: Long,
+    val permissions: Set<PermissionDto>
+)
+
+data class PermissionDto(
+    val permission: PermissionType,
+    val enabled: Boolean
+)
+
+data class PermissionCountResponse(
+    val totalPermission: Int,
+    val grantedPermissions: Int
 )
 
 data class UserWithPermissionDto(
@@ -298,7 +302,7 @@ data class UserWithPermissionDto(
     val username: String,
     val status: Status?,
     val role: String,
-    val permissions: Set<PermissionType>
+    val permissions: Set<PermissionType>,
 ) {
     companion object {
         fun fromAssignment(assignment: ContractAssignment): UserWithPermissionDto {
@@ -310,7 +314,7 @@ data class UserWithPermissionDto(
                 username = user.username,
                 status = user.status,
                 role = user.role.name,
-                permissions = assignment.permissions
+                permissions = assignment.permissions,
             )
         }
 
@@ -323,7 +327,7 @@ data class UserWithPermissionDto(
                 username = user.username,
                 status = user.status,
                 role = user.role.name,
-                permissions = assignment.permissions
+                permissions = assignment.permissions,
             )
         }
     }
@@ -331,19 +335,19 @@ data class UserWithPermissionDto(
 
 data class OperatorAssignedDto(
     val templateId: Long,
-    val permissions: Set<PermissionType>
+    val permissions: Map<PermissionType, Boolean>
 )
 
-data class OperatorAssignedRequest(
+data class OperatorAssignedResponse(
     val assigned: List<OperatorAssignedDto>
 )
 
 data class OperatorAssignedContractDto(
     val contractId: Long,
-    val permissions: Set<PermissionType>
+    val permissions: Map<PermissionType, Boolean>
 )
 
-data class OperatorAssignedContractRequest(
+data class OperatorAssignedContractResponse(
     val assigned: List<OperatorAssignedContractDto>
 )
 
@@ -366,3 +370,15 @@ data class ContractsByOrganizationDto(
         }
     }
 }
+
+data class OperatorWithPermissionDto(
+    val id: Long,
+    val fullName: String,
+    val lastName: String,
+    val username: String,
+    val role: String,
+    val status: Status,
+    val organisationId: Long,
+    val permissions: Map<PermissionType, Boolean>,
+    val permissionCountResponse: PermissionCountResponse
+)

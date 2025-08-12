@@ -11,12 +11,8 @@ import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.web.bind.annotation.*
 import org.springframework.web.multipart.MultipartFile
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.Principal
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
-import kotlin.contracts.contract
 
 @RestControllerAdvice
 class ExceptionHandlers(
@@ -70,6 +66,12 @@ class ExceptionHandlers(
 
             is PasswordMismatchException -> ResponseEntity.badRequest()
                 .body(exceptions.getErrorMessage(errorMessageSource,exceptions.newPassword,exceptions.confirmPassword))
+
+            is TemplateTitleAlreadyExistsException -> ResponseEntity.badRequest()
+                .body(exceptions.getErrorMessage(errorMessageSource,exceptions.title))
+
+            is FileSizeExceededException -> ResponseEntity.badRequest()
+                .body(exceptions.getErrorMessage(errorMessageSource,exceptions.size))
         }
     }
 }
@@ -207,7 +209,7 @@ class AdminController(
 
     @PreAuthorize("hasRole('ADMIN')")
     @PutMapping("/update/{id}")
-    fun update(@PathVariable id: Long, updateDto: UserUpdateDto) {
+    fun update(@PathVariable id: Long,@RequestBody updateDto: UserUpdateDto) {
         userService.update(id, updateDto)
     }
 
@@ -259,11 +261,18 @@ class AdminController(
             .body(readBytes)
     }
 
-    @GetMapping("/organizations/{id}/contracts")
-    fun getContractsByOrganizationId(@PathVariable id: Long,
-                                     @RequestParam(required = false) title: String?,
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/organizations-name/contracts")
+    fun getContractsByOrganization(@RequestParam(required = false) name: String?,
+        @RequestParam(required = false) title: String?,
                                      pageable: Pageable): Page<ContractsByOrganizationDto>{
-        return contractServiceImpl.getAllContractsByOrganisation(id,title,pageable)
+        return contractServiceImpl.getAllContractsByOrganisation(name,title,pageable)
+    }
+
+    @GetMapping("/organizations/contracts")
+    fun getAllContractsSearchOrganisation(@RequestParam(required = false) search: String?,
+                                          pageable: Pageable): Page<ContractsByOrganizationDto>{
+        return contractServiceImpl.getAllContractsSearchOrganisation(search,pageable)
     }
 
     fun getMediaType(extension: String): MediaType = when (extension) {
@@ -282,7 +291,8 @@ class DirectorController(
     private val userService: UserServiceImpl,
     private val templateService: TemplateServiceImpl,
     private val templateAssignedServiceImpl: TemplateAssignedServiceImpl,
-    private val permissionService: PermissionService
+    private val permissionService: PermissionService,
+    private val securityUtils: SecurityUtils
 ) {
 
     @PreAuthorize("hasAnyRole('DIRECTOR')")
@@ -316,17 +326,16 @@ class DirectorController(
         @RequestParam("title") title: String,
         @RequestParam("file") file: MultipartFile,
     ) {
-        val userId = SecurityContextHolder.getContext().authentication.details as Long
-        templateService.saveFile(title, file,userId)
+        templateService.saveFile(title, file,securityUtils.getCurrentUserId())
     }
 
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @GetMapping("/getAllTemplate")
     fun getAllTemplateAndSearch(
-        @RequestParam(required = false) title: String?,
+        @RequestParam(required = false) search: String?,
         pageable: Pageable
     ): Page<GetOneTemplate> {
-        return templateService.getAllTemplateAndSearch(title, pageable)
+        return templateService.getAllTemplateAndSearch(search, pageable)
     }
 
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
@@ -355,12 +364,7 @@ class DirectorController(
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @GetMapping("/templates/view/{templateId}")
     fun viewTemplate(@PathVariable templateId: Long): ResponseEntity<ByteArray> {
-        val auth = SecurityContextHolder.getContext().authentication
-        val operatorId = auth.details as Long
-        val roles = auth.authorities.map { it.authority }
-        if ("ROLE_OPERATOR" in roles) {
-            permissionService.checkTemplatePermission(operatorId, templateId, PermissionType.READ)
-        }
+        securityUtils.checkPermissionTemplateIfOperator(permissionService,templateId, PermissionType.READ)
         val file = templateService.getTemplateFileBytes(templateId)
         val readBytes = file.readBytes()
         val extension = file.extension.lowercase()
@@ -382,12 +386,7 @@ class DirectorController(
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @DeleteMapping("delete/{id}/template")
     fun deleteTemplate(@PathVariable id: Long) {
-        val auth = SecurityContextHolder.getContext().authentication
-        val operatorId = auth.details as Long
-        val roles = auth.authorities.map { it.authority }
-        if ("ROLE_OPERATOR" in roles) {
-            permissionService.checkTemplatePermission(operatorId, id, PermissionType.DELETE)
-        }
+        securityUtils.checkPermissionTemplateIfOperator(permissionService,id, PermissionType.DELETE)
         templateService.deleteTemplate(id)
     }
 
@@ -396,9 +395,9 @@ class DirectorController(
     fun assignTemplate(
         @PathVariable templateId: Long,
         @RequestBody request: TemplateAssignRequest
-    ) {
-        val userId = SecurityContextHolder.getContext().authentication.details as Long
-        templateAssignedServiceImpl.assignTemplateToOperator(templateId,request,userId)
+    ): PermissionCountResponse {
+        val userId = securityUtils.getCurrentUserId()
+        return templateAssignedServiceImpl.assignTemplateToOperator(templateId,request,userId)
     }
 
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
@@ -408,34 +407,31 @@ class DirectorController(
         @RequestParam(required = false, value = "title") title: String?,
         @RequestParam(required = false, value = "file") file: MultipartFile?
     ) {
-        val auth = SecurityContextHolder.getContext().authentication
-        val operatorId = auth.details as Long
-        val roles = auth.authorities.map { it.authority }
-        if ("ROLE_OPERATOR" in roles) {
-            permissionService.checkTemplatePermission(operatorId, id, PermissionType.UPDATE)
-        }
+        securityUtils.checkPermissionTemplateIfOperator(permissionService,id, PermissionType.UPDATE)
         val request = UpdateTemplateDto(title, file)
         templateService.updateTemplate(id, request)
     }
 
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @PutMapping("/template-keys/status")
-    fun updateStatus(@RequestBody requests: List<UpdateTemplateKeyEnabledRequest>) {
-        val auth = SecurityContextHolder.getContext().authentication
-        val operatorId = auth.details as Long
-        val roles = auth.authorities.map { it.authority }
-        if ("ROLE_OPERATOR" in roles) {
-            val templateKeyId = requests.firstOrNull()?.templateKeyId
-            val template = templateService.findByTemplateKeyByTemplateId(templateKeyId!!)
-            permissionService.checkTemplatePermission(operatorId, template.id!!, PermissionType.SWITCH)
-        }
+    fun updateStatus(@RequestBody requests: UpdateTemplateKeyEnabledRequest) {
+        val template = templateService.findByTemplateKeyByTemplateId(requests.templateKeyId)
+        securityUtils.checkPermissionTemplateIfOperator(permissionService,template.id!!, PermissionType.SWITCH)
         templateService.updateTemplateKeyStatuses(requests)
     }
 
+    @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @GetMapping("/get-operator-by-organisation")
-    fun getAllOperatorByOrganisation(@RequestParam(required = false) search: String?, pageable: Pageable): Page<GetOneUser>{
-        val userId = SecurityContextHolder.getContext().authentication.details as Long
-        return userService.getAllOperatorsByOrganisation(userId,search,pageable)
+    fun getAllOperatorByOrganisationAndTemplate(@RequestParam templateId: Long, @RequestParam(required = false) search: String?, pageable: Pageable): Page<OperatorWithPermissionDto>{
+        val userId = securityUtils.getCurrentUserId()
+        return userService.getAllOperatorsByOrganisationAndTemplate(userId,templateId,search,pageable)
+    }
+
+    @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
+    @GetMapping("/get-operator-by-organisation-contract")
+    fun getAllOperatorByOrganisationAndContract(@RequestParam contractId: Long,@RequestParam(required = false) search: String?,pageable: Pageable): Page<OperatorWithPermissionDto>{
+        val userId = securityUtils.getCurrentUserId()
+       return userService.getAllOperatorsByOrganisationAndContract(userId,contractId,search,pageable)
     }
 
     fun getMediaType(extension: String): MediaType = when (extension) {
@@ -457,7 +453,8 @@ class OperatorController(
     private val downloadHistoryServiceImpl: DownloadHistoryServiceImpl,
     private val organisationServiceImpl: OrganisationServiceImpl,
     private val permissionService: PermissionService,
-    private val templateAssignedServiceImpl: TemplateAssignedServiceImpl
+    private val templateAssignedServiceImpl: TemplateAssignedServiceImpl,
+    private val securityUtils: SecurityUtils
 ) {
 
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
@@ -481,13 +478,8 @@ class OperatorController(
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @PostMapping("/create")
     fun createContract(@RequestBody request: CreateContractRequest) {
-        val auth = SecurityContextHolder.getContext().authentication
-        val operatorId = auth.details as Long
-        val roles = auth.authorities.map { it.authority }
-        if ("ROLE_OPERATOR" in roles) {
-            permissionService.checkTemplatePermission(operatorId, request.templateId, PermissionType.CREATE)
-        }
-        contractService.createContract(request, operatorId)
+        securityUtils.checkPermissionTemplateIfOperator(permissionService,request.templateId, PermissionType.CREATE)
+        contractService.createContract(request, securityUtils.getCurrentUserId())
     }
 
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
@@ -504,9 +496,9 @@ class OperatorController(
     fun assignContract(
         @PathVariable contractId: Long,
         @RequestBody request: ContractAssignRequest
-    ) {
-        val userId = SecurityContextHolder.getContext().authentication.details as Long
-        contractAssignmentServiceImpl.assignContractToOperator(contractId,request,userId)
+    ): PermissionCountResponse {
+        val userId = securityUtils.getCurrentUserId()
+       return contractAssignmentServiceImpl.assignContractToOperator(contractId,request,userId)
     }
 
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
@@ -521,9 +513,11 @@ class OperatorController(
 
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @GetMapping("/downloads/my")
-    fun getMyDownloads(@RequestParam(required = false) status: DownloadStatus?, pageable: Pageable): ResponseEntity<Page<DownloadHistoryResponse>> {
-        val userId = SecurityContextHolder.getContext().authentication.details as Long
-        val result = downloadHistoryServiceImpl.getMyDownloads(status,userId,pageable)
+    fun getMyDownloads(@RequestParam(required = false) status: DownloadStatus?,
+                       @RequestParam(required = false) format: String?,
+                       pageable: Pageable): ResponseEntity<Page<DownloadHistoryResponse>> {
+        val userId = securityUtils.getCurrentUserId()
+        val result = downloadHistoryServiceImpl.getMyDownloads(status,format,userId,pageable)
         return ResponseEntity.ok(result)
     }
 
@@ -546,12 +540,6 @@ class OperatorController(
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @DeleteMapping("/delete-contract/{id}")
     fun deleteContract(@PathVariable id: Long){
-        val auth = SecurityContextHolder.getContext().authentication
-        val operatorId = auth.details as Long
-        val roles = auth.authorities.map { it.authority }
-        if ("ROLE_OPERATOR" in roles) {
-            permissionService.checkContractPermission(operatorId, id, PermissionType.DELETE)
-        }
         contractService.deleteContract(id)
     }
 
@@ -564,12 +552,6 @@ class OperatorController(
     @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @PutMapping("/update-contract/{id}")
     fun updateContract(@PathVariable id: Long,@RequestBody request: UpdateContractRequest){
-        val auth = SecurityContextHolder.getContext().authentication
-        val operatorId = auth.details as Long
-        val roles = auth.authorities.map { it.authority }
-        if ("ROLE_OPERATOR" in roles) {
-            permissionService.checkContractPermission(operatorId, id, PermissionType.DELETE)
-        }
         contractService.updateContract(id,request)
     }
 
@@ -589,26 +571,30 @@ class OperatorController(
     @GetMapping("/users/by-organisation")
     fun findUsersByOrganisationIdAndFilters(@RequestParam(required = false) fullName: String?,
                                             @RequestParam(required = false) status: Status?,
+                                            @RequestParam(required = false) role: UserRole?,
                                             pageable: Pageable): Page<GetOneUser>{
-        val userId = SecurityContextHolder.getContext().authentication.details as Long
-       return organisationServiceImpl.findUsersByOrganisationIdAndFilters(userId,fullName,status,pageable)
+        val userId = securityUtils.getCurrentUserId()
+       return organisationServiceImpl.findUsersByOrganisationIdAndFilters(userId,role,fullName,status,pageable)
     }
 
+    @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @GetMapping("/get-assigned-operator")
-    fun getOperatorAssignedTemplate(): OperatorAssignedRequest{
-        val userId = SecurityContextHolder.getContext().authentication.details as Long
+    fun getOperatorAssignedTemplate(): OperatorAssignedResponse {
+        val userId = securityUtils.getCurrentUserId()
         return templateAssignedServiceImpl.getOperatorAssignedTemplate(userId)
     }
 
+    @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @GetMapping("/get-assigned-contract-operator")
-    fun getOperatorAssignedContract(): OperatorAssignedContractRequest{
-        val userId = SecurityContextHolder.getContext().authentication.details as Long
+    fun getOperatorAssignedContract(): OperatorAssignedContractResponse{
+        val userId = securityUtils.getCurrentUserId()
         return contractAssignmentServiceImpl.getOperatorAssignedContract(userId)
     }
 
+    @PreAuthorize("hasAnyRole('OPERATOR', 'DIRECTOR')")
     @GetMapping("/get-assigned-template-by-search")
     fun getAllAssignedTemplateBySearchTitle(@RequestParam(required = false) title: String?,pageable: Pageable): Page<GetOneTemplate>{
-        val userId = SecurityContextHolder.getContext().authentication.details as Long
+        val userId = securityUtils.getCurrentUserId()
         return templateAssignedServiceImpl.searchTemplatesByOperatorIdAndTitle(userId,title,pageable)
     }
 

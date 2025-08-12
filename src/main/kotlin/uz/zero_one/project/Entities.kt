@@ -40,8 +40,12 @@ class Organisation(
 ): BaseEntity()
 
 @Entity
+@Table(
+    uniqueConstraints = [
+        UniqueConstraint(columnNames = ["title", "organisation_id"])
+    ]
+)
 class Template(
-    @Column(unique = true)
     var title: String,
     var filePath: String,
     @ManyToOne
